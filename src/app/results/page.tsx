@@ -31,26 +31,27 @@ type PredictionRow = {
 
 type StageFilter = "ALL" | string;
 
+type PublicRow = {
+  display_name: string;
+  department: string;
+  pred_home: number;
+  pred_away: number;
+  points: number;
+};
+
 function calcPoints(predHome: number, predAway: number, resHome: number, resAway: number): number {
-  // 1) exact goed
   if (predHome === resHome && predAway === resAway) return 200;
 
   const predDiff = predHome - predAway;
   const resDiff = resHome - resAway;
 
-  // 2) gelijkspel goed (score niet exact)
   if (predDiff === 0 && resDiff === 0) return 100;
 
   const winnerCorrect = (predDiff > 0 && resDiff > 0) || (predDiff < 0 && resDiff < 0);
   const oneTeamGoalsCorrect = predHome === resHome || predAway === resAway;
 
-  // 3) winnaar goed + goals van 1 team goed
   if (winnerCorrect && oneTeamGoalsCorrect) return 95;
-
-  // 4) winnaar goed
   if (winnerCorrect) return 75;
-
-  // 5) goals van 1 team goed
   if (oneTeamGoalsCorrect) return 20;
 
   return 0;
@@ -70,6 +71,13 @@ export default function ResultsPage() {
   const [stageFilter, setStageFilter] = useState<StageFilter>("ALL");
   const [onlyWithResult, setOnlyWithResult] = useState(true);
 
+  // Modal state: iedereen + punten voor deze match
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalLoading, setModalLoading] = useState(false);
+  const [modalErr, setModalErr] = useState<string | null>(null);
+  const [modalRows, setModalRows] = useState<PublicRow[]>([]);
+  const [modalTitle, setModalTitle] = useState<string>("");
+
   useEffect(() => {
     let cancelled = false;
 
@@ -83,8 +91,7 @@ export default function ResultsPage() {
           if (!cancelled) setMsg(sessErr.message);
           return;
         }
-        const user = sessionData.session?.user;
-        if (!user) {
+        if (!sessionData.session?.user) {
           router.replace("/login");
           return;
         }
@@ -96,26 +103,13 @@ export default function ResultsPage() {
             .select("id,kickoff,stage,home_team_id,away_team_id")
             .order("kickoff", { ascending: false }),
           supabase.from("results").select("match_id,home_goals,away_goals"),
-          // RLS zorgt dat je alleen je eigen predictions ziet
           supabase.from("predictions").select("match_id,home_goals,away_goals"),
         ]);
 
-        if (teamRes.error) {
-          if (!cancelled) setMsg(teamRes.error.message);
-          return;
-        }
-        if (matchRes.error) {
-          if (!cancelled) setMsg(matchRes.error.message);
-          return;
-        }
-        if (resultRes.error) {
-          if (!cancelled) setMsg(resultRes.error.message);
-          return;
-        }
-        if (predRes.error) {
-          if (!cancelled) setMsg(predRes.error.message);
-          return;
-        }
+        if (teamRes.error) { if (!cancelled) setMsg(teamRes.error.message); return; }
+        if (matchRes.error) { if (!cancelled) setMsg(matchRes.error.message); return; }
+        if (resultRes.error) { if (!cancelled) setMsg(resultRes.error.message); return; }
+        if (predRes.error) { if (!cancelled) setMsg(predRes.error.message); return; }
 
         if (!cancelled) {
           setTeams((teamRes.data ?? []) as TeamRow[]);
@@ -131,9 +125,7 @@ export default function ResultsPage() {
     }
 
     init();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [router]);
 
   const teamMap = useMemo(() => {
@@ -170,6 +162,41 @@ export default function ResultsPage() {
     return arr;
   }, [matches]);
 
+  function started(kickoffIso: string) {
+    return Date.now() >= new Date(kickoffIso).getTime();
+  }
+
+  async function openEveryoneForMatch(m: MatchRow) {
+    const res = resultMap.get(m.id);
+    if (!res) return; // alleen als uitslag bestaat
+    if (!started(m.kickoff)) return; // alleen na kickoff
+
+    const home = teamMap.get(m.home_team_id) ?? { name: "—", countryCode: null };
+    const away = teamMap.get(m.away_team_id) ?? { name: "—", countryCode: null };
+
+    setModalOpen(true);
+    setModalLoading(true);
+    setModalErr(null);
+    setModalRows([]);
+
+    setModalTitle(`${home.name} – ${away.name} (${res.home_goals}-${res.away_goals})`);
+
+    try {
+      const { data, error } = await supabase.rpc("get_match_predictions_with_points", {
+        p_match_id: m.id,
+      });
+
+      if (error) {
+        setModalErr(error.message);
+        return;
+      }
+
+      setModalRows((data ?? []) as PublicRow[]);
+    } finally {
+      setModalLoading(false);
+    }
+  }
+
   const rows = useMemo(() => {
     const filtered = matches.filter((m) => {
       const st = (m.stage ?? "").toUpperCase();
@@ -186,13 +213,12 @@ export default function ResultsPage() {
       const away = teamMap.get(m.away_team_id) ?? { name: "—", countryCode: null };
 
       let points: number | null = null;
-      if (res && pred) {
-        points = calcPoints(pred.home_goals, pred.away_goals, res.home_goals, res.away_goals);
-      } else if (res && !pred) {
-        points = 0; // uitslag is er, maar jij hebt niets ingevuld
-      }
+      if (res && pred) points = calcPoints(pred.home_goals, pred.away_goals, res.home_goals, res.away_goals);
+      else if (res && !pred) points = 0;
 
-      return { match: m, home, away, res, pred, points };
+      const clickable = !!res && started(m.kickoff);
+
+      return { match: m, home, away, res, pred, points, clickable };
     });
   }, [matches, stageFilter, onlyWithResult, resultMap, predMap, teamMap]);
 
@@ -200,17 +226,12 @@ export default function ResultsPage() {
     const done = rows.filter((r) => r.res !== null);
     const withPred = done.filter((r) => r.pred !== null);
     const totalPoints = rows.reduce((sum, r) => sum + (r.points ?? 0), 0);
-    return {
-      totalPoints,
-      doneCount: done.length,
-      withPredCount: withPred.length,
-      totalCount: rows.length,
-    };
+
+    return { totalPoints, doneCount: done.length, withPredCount: withPred.length, totalCount: rows.length };
   }, [rows]);
 
   function pointsColor(p: number | null) {
     if (p === null) return "#6b7280";
-    if (p >= 100) return "#0a7a2f";
     if (p >= 75) return "#0a7a2f";
     if (p >= 20) return "#92400e";
     return "#111827";
@@ -229,19 +250,11 @@ export default function ResultsPage() {
     <PageShell maxWidth={1100}>
       <Topbar />
 
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "baseline",
-          gap: 12,
-          flexWrap: "wrap",
-        }}
-      >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
         <div>
           <h1 style={{ margin: 0 }}>Uitslagen & mijn punten</h1>
           <p style={{ marginTop: 6, color: "#6b7280" }}>
-            Per wedstrijd: uitslag, jouw voorspelling en je punten.
+            Klik op een wedstrijd (na kickoff) om voorspellingen van iedereen + punten te zien.
           </p>
         </div>
 
@@ -251,9 +264,7 @@ export default function ResultsPage() {
             <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)} style={selectStyle}>
               <option value="ALL">Alle fases</option>
               {stageOptions.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
+                <option key={s} value={s}>{s}</option>
               ))}
             </select>
           </div>
@@ -296,7 +307,16 @@ export default function ResultsPage() {
         </div>
 
         {rows.map((r) => (
-          <div key={r.match.id} style={trow}>
+          <div
+            key={r.match.id}
+            style={{
+              ...trow,
+              cursor: r.clickable ? "pointer" : "default",
+              background: r.clickable ? "#fff" : "#fff",
+            }}
+            onClick={() => (r.clickable ? openEveryoneForMatch(r.match) : null)}
+            title={r.clickable ? "Klik voor alle voorspellingen + punten" : "Pas klikbaar na kickoff en met uitslag"}
+          >
             <div style={{ color: "#374151", fontSize: 13 }}>
               {new Date(r.match.kickoff).toLocaleString()}
               <div style={{ fontSize: 12, color: "#6b7280" }}>{(r.match.stage ?? "").toUpperCase()}</div>
@@ -306,6 +326,7 @@ export default function ResultsPage() {
               <TeamLabel name={r.home.name} countryCode={r.home.countryCode} />
               <span>–</span>
               <TeamLabel name={r.away.name} countryCode={r.away.countryCode} />
+              {r.clickable ? <span style={pill}>👀 iedereen</span> : null}
             </div>
 
             <div style={{ textAlign: "right", fontWeight: 700 }}>
@@ -322,24 +343,66 @@ export default function ResultsPage() {
           </div>
         ))}
 
-        {rows.length === 0 && <div style={{ padding: 12, color: "#6b7280" }}>Geen wedstrijden binnen dit filter.</div>}
+        {rows.length === 0 && (
+          <div style={{ padding: 12, color: "#6b7280" }}>Geen wedstrijden binnen dit filter.</div>
+        )}
       </div>
 
-      <p style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-        Let op: punten worden berekend volgens jouw regels (200/100/95/75/20/0). Als er geen voorspelling is, tonen we
-        0 bij wedstrijden met uitslag.
-      </p>
+      {/* Modal */}
+      {modalOpen && (
+        <div style={overlay} onClick={() => setModalOpen(false)}>
+          <div style={modal} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+              <h2 style={{ margin: 0 }}>{modalTitle}</h2>
+              <button style={closeBtn} onClick={() => setModalOpen(false)}>
+                Sluiten
+              </button>
+            </div>
+
+            {modalLoading && <p style={{ marginTop: 12 }}>Laden…</p>}
+            {modalErr && <p style={{ marginTop: 12, color: "crimson" }}>Fout: {modalErr}</p>}
+
+            {!modalLoading && !modalErr && (
+              <div style={{ marginTop: 12 }}>
+                <div style={listWrap}>
+                  <div style={listHead}>
+                    <div>Speler</div>
+                    <div style={{ textAlign: "right" }}>Voorspelling</div>
+                    <div style={{ textAlign: "right" }}>Punten</div>
+                  </div>
+
+                  {modalRows.map((r, idx) => (
+                    <div key={idx} style={listRow}>
+                      <div>
+                        <b>{r.display_name}</b>
+                        {r.department ? <span style={{ color: "#6b7280" }}> ({r.department})</span> : null}
+                      </div>
+                      <div style={{ textAlign: "right", fontWeight: 800 }}>
+                        {r.pred_home} - {r.pred_away}
+                      </div>
+                      <div style={{ textAlign: "right", fontWeight: 900 }}>
+                        {r.points}
+                      </div>
+                    </div>
+                  ))}
+
+                  {modalRows.length === 0 && (
+                    <div style={{ padding: 12, color: "#6b7280" }}>
+                      Nog geen voorspellingen gevonden voor deze wedstrijd.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </PageShell>
   );
 }
 
-/* ===== styles ===== */
-
-const lbl: React.CSSProperties = {
-  fontSize: 12,
-  color: "#6b7280",
-  marginBottom: 6,
-};
+/* styles */
+const lbl: React.CSSProperties = { fontSize: 12, color: "#6b7280", marginBottom: 6 };
 
 const selectStyle: React.CSSProperties = {
   padding: 10,
@@ -372,17 +435,8 @@ const statCard: React.CSSProperties = {
   boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
 };
 
-const statLabel: React.CSSProperties = {
-  fontSize: 12,
-  color: "#6b7280",
-};
-
-const statValue: React.CSSProperties = {
-  marginTop: 6,
-  fontSize: 20,
-  fontWeight: 900,
-  color: "#111827",
-};
+const statLabel: React.CSSProperties = { fontSize: 12, color: "#6b7280" };
+const statValue: React.CSSProperties = { marginTop: 6, fontSize: 20, fontWeight: 900, color: "#111827" };
 
 const tableWrap: React.CSSProperties = {
   marginTop: 16,
@@ -406,6 +460,66 @@ const trow: React.CSSProperties = {
   display: "grid",
   gridTemplateColumns: "190px 1fr 120px 120px 110px",
   padding: 12,
+  borderTop: "1px solid #eee",
+  alignItems: "center",
+};
+
+const pill: React.CSSProperties = {
+  marginLeft: 8,
+  padding: "3px 8px",
+  borderRadius: 999,
+  fontSize: 12,
+  background: "#eff6ff",
+  color: "#1d4ed8",
+  border: "1px solid #bfdbfe",
+};
+
+const overlay: React.CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(0,0,0,0.45)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 16,
+  zIndex: 9999,
+};
+
+const modal: React.CSSProperties = {
+  width: "min(820px, 100%)",
+  background: "#fff",
+  borderRadius: 14,
+  padding: 16,
+  boxShadow: "0 20px 50px rgba(0,0,0,0.25)",
+};
+
+const closeBtn: React.CSSProperties = {
+  padding: "8px 10px",
+  borderRadius: 10,
+  border: "1px solid #ddd",
+  background: "#fff",
+  cursor: "pointer",
+};
+
+const listWrap: React.CSSProperties = {
+  border: "1px solid #ddd",
+  borderRadius: 12,
+  overflow: "hidden",
+};
+
+const listHead: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 140px 90px",
+  background: "#f7f7f7",
+  padding: 10,
+  fontWeight: 800,
+  fontSize: 13,
+};
+
+const listRow: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 140px 90px",
+  padding: 10,
   borderTop: "1px solid #eee",
   alignItems: "center",
 };

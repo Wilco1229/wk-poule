@@ -29,6 +29,13 @@ type ExistingPrediction = {
 
 type Draft = { home: string; away: string };
 
+type PublicPredictionRow = {
+  display_name: string;
+  department: string;
+  home_goals: number;
+  away_goals: number;
+};
+
 export default function PredictionsByStagePage({
   params,
 }: {
@@ -46,9 +53,16 @@ export default function PredictionsByStagePage({
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [drafts, setDrafts] = useState<Record<number, Draft>>({});
 
-  // 🔒 Lock-status (fase): deadline = eerste kickoff van de fase
+  // 🔒 Fase-lock (jouw huidige UX): deadline = eerste kickoff van de stage
   const [deadline, setDeadline] = useState<Date | null>(null);
   const isClosed = deadline ? new Date() >= deadline : false;
+
+  // Modal state (voorspellingen van anderen)
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalLoading, setModalLoading] = useState(false);
+  const [modalErr, setModalErr] = useState<string | null>(null);
+  const [modalRows, setModalRows] = useState<PublicPredictionRow[]>([]);
+  const [modalTitle, setModalTitle] = useState<string>("");
 
   const teamMap = useMemo(() => {
     const m = new Map<number, { name: string; countryCode: string | null }>();
@@ -79,7 +93,7 @@ export default function PredictionsByStagePage({
           return;
         }
 
-        // Deadline bepalen (eerste kickoff van fase)
+        // Deadline bepalen (eerste kickoff van deze stage)
         const { data: deadlineRow, error: dlErr } = await supabase
           .from("matches")
           .select("kickoff")
@@ -92,8 +106,7 @@ export default function PredictionsByStagePage({
           setMsg(dlErr.message);
           return;
         }
-
-        setDeadline(deadlineRow?.kickoff ? new Date(deadlineRow.kickoff) : null);
+        if (!cancelled) setDeadline(deadlineRow?.kickoff ? new Date(deadlineRow.kickoff) : null);
 
         // Teams (incl. country_code voor vlaggen)
         const { data: teamData, error: teamErr } = await supabase
@@ -107,7 +120,7 @@ export default function PredictionsByStagePage({
         }
         if (!cancelled) setTeams((teamData ?? []) as TeamRow[]);
 
-        // Matches voor fase
+        // Matches voor deze stage
         const { data: matchData, error: matchErr } = await supabase
           .from("matches")
           .select("id,kickoff,stage,home_team_id,away_team_id")
@@ -122,7 +135,7 @@ export default function PredictionsByStagePage({
         const ms = (matchData ?? []) as MatchRow[];
         if (!cancelled) setMatches(ms);
 
-        // Bestaande voorspellingen (RLS => alleen eigen)
+        // Bestaande voorspellingen (RLS: alleen eigen)
         const ids = ms.map((m) => m.id);
         if (ids.length > 0) {
           const { data: predData, error: predErr } = await supabase
@@ -137,7 +150,6 @@ export default function PredictionsByStagePage({
 
           const existing = (predData ?? []) as ExistingPrediction[];
           const initDrafts: Record<number, Draft> = {};
-
           for (const m of ms) {
             const p = existing.find((e) => e.match_id === m.id);
             initDrafts[m.id] = {
@@ -171,6 +183,35 @@ export default function PredictionsByStagePage({
         [side]: value,
       },
     }));
+  }
+
+  function matchStarted(kickoffIso: string) {
+    return Date.now() >= new Date(kickoffIso).getTime();
+  }
+
+  async function openPublicPredictions(matchId: number, kickoffIso: string) {
+    if (!matchStarted(kickoffIso)) return; // alleen na start
+
+    setModalOpen(true);
+    setModalLoading(true);
+    setModalErr(null);
+    setModalRows([]);
+    setModalTitle("Voorspellingen van deelnemers");
+
+    try {
+      const { data, error } = await supabase.rpc("get_public_predictions", {
+        p_match_id: matchId,
+      });
+
+      if (error) {
+        setModalErr(error.message);
+        return;
+      }
+
+      setModalRows((data ?? []) as PublicPredictionRow[]);
+    } finally {
+      setModalLoading(false);
+    }
   }
 
   async function saveAll() {
@@ -270,9 +311,7 @@ export default function PredictionsByStagePage({
 
       {deadline && (
         <p style={{ marginTop: 6, fontSize: 13, color: "#666" }}>
-          {isClosed
-            ? `🔒 Fase gesloten sinds ${deadline.toLocaleString()}`
-            : `⏰ Deadline: ${deadline.toLocaleString()}`}
+          {isClosed ? `🔒 Fase gesloten sinds ${deadline.toLocaleString()}` : `⏰ Deadline: ${deadline.toLocaleString()}`}
         </p>
       )}
 
@@ -284,12 +323,24 @@ export default function PredictionsByStagePage({
           const away = teamMap.get(m.away_team_id);
           const d = drafts[m.id] ?? { home: "", away: "" };
 
+          const started = matchStarted(m.kickoff);
+
           return (
-            <div key={m.id} style={card}>
+            <div
+              key={m.id}
+              style={{
+                ...card,
+                cursor: started ? "pointer" : "default",
+                outline: started ? "1px solid #e5e7eb" : "none",
+              }}
+              onClick={() => openPublicPredictions(m.id, m.kickoff)}
+              title={started ? "Klik om voorspellingen van anderen te bekijken" : "Pas zichtbaar na start van de wedstrijd"}
+            >
               <div style={{ fontWeight: 700, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                 <TeamLabel name={home?.name ?? "—"} countryCode={home?.countryCode ?? null} />
                 <span>–</span>
                 <TeamLabel name={away?.name ?? "—"} countryCode={away?.countryCode ?? null} />
+                {started ? <span style={pill}>👀 Bekijk voorspellingen</span> : null}
               </div>
 
               <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
@@ -304,6 +355,7 @@ export default function PredictionsByStagePage({
                   inputMode="numeric"
                   placeholder="0"
                   style={scoreInput}
+                  onClick={(e) => e.stopPropagation()}
                 />
                 <span>-</span>
                 <input
@@ -313,6 +365,7 @@ export default function PredictionsByStagePage({
                   inputMode="numeric"
                   placeholder="0"
                   style={scoreInput}
+                  onClick={(e) => e.stopPropagation()}
                 />
               </div>
             </div>
@@ -320,7 +373,6 @@ export default function PredictionsByStagePage({
         })}
       </div>
 
-      {/* Onderste opslaan-knop */}
       <div style={{ marginTop: 18, display: "flex", justifyContent: "flex-end" }}>
         <button
           onClick={saveAll}
@@ -336,7 +388,51 @@ export default function PredictionsByStagePage({
         </button>
       </div>
 
-      <div style={{ height: 8 }} />
+      {/* Modal */}
+      {modalOpen && (
+        <div style={overlay} onClick={() => setModalOpen(false)}>
+          <div style={modal} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+              <h2 style={{ margin: 0 }}>{modalTitle}</h2>
+              <button style={closeBtn} onClick={() => setModalOpen(false)}>
+                Sluiten
+              </button>
+            </div>
+
+            {modalLoading && <p style={{ marginTop: 12 }}>Laden…</p>}
+            {modalErr && <p style={{ marginTop: 12, color: "crimson" }}>Fout: {modalErr}</p>}
+
+            {!modalLoading && !modalErr && (
+              <div style={{ marginTop: 12 }}>
+                <div style={listWrap}>
+                  <div style={listHead}>
+                    <div>Speler</div>
+                    <div style={{ textAlign: "right" }}>Voorspelling</div>
+                  </div>
+
+                  {modalRows.map((r, idx) => (
+                    <div key={idx} style={listRow}>
+                      <div>
+                        <b>{r.display_name}</b>
+                        {r.department ? <span style={{ color: "#6b7280" }}> ({r.department})</span> : null}
+                      </div>
+                      <div style={{ textAlign: "right", fontWeight: 800 }}>
+                        {r.home_goals} - {r.away_goals}
+                      </div>
+                    </div>
+                  ))}
+
+                  {modalRows.length === 0 && (
+                    <div style={{ padding: 12, color: "#6b7280" }}>
+                      Nog geen voorspellingen gevonden voor deze wedstrijd.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </PageShell>
   );
 }
@@ -361,4 +457,64 @@ const btnPrimary: React.CSSProperties = {
   borderRadius: 10,
   border: "none",
   color: "#fff",
+};
+
+const pill: React.CSSProperties = {
+  marginLeft: 8,
+  padding: "3px 8px",
+  borderRadius: 999,
+  fontSize: 12,
+  background: "#eff6ff",
+  color: "#1d4ed8",
+  border: "1px solid #bfdbfe",
+};
+
+const overlay: React.CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(0,0,0,0.45)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 16,
+  zIndex: 9999,
+};
+
+const modal: React.CSSProperties = {
+  width: "min(720px, 100%)",
+  background: "#fff",
+  borderRadius: 14,
+  padding: 16,
+  boxShadow: "0 20px 50px rgba(0,0,0,0.25)",
+};
+
+const closeBtn: React.CSSProperties = {
+  padding: "8px 10px",
+  borderRadius: 10,
+  border: "1px solid #ddd",
+  background: "#fff",
+  cursor: "pointer",
+};
+
+const listWrap: React.CSSProperties = {
+  border: "1px solid #ddd",
+  borderRadius: 12,
+  overflow: "hidden",
+};
+
+const listHead: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 120px",
+  background: "#f7f7f7",
+  padding: 10,
+  fontWeight: 800,
+  fontSize: 13,
+};
+
+const listRow: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 120px",
+  padding: 10,
+  borderTop: "1px solid #eee",
+  alignItems: "center",
 };
