@@ -16,12 +16,14 @@ export default function ResetPasswordPage() {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  const [tokenHash, setTokenHash] = useState<string | null>(null);
+  const [flowType, setFlowType] = useState<string | null>(null);
+
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
 
-  const [msg, setMsg] = useState<string | null>(
-    "Even checken…"
-  );
+  const [msg, setMsg] = useState<string | null>("Even checken…");
+  const [needsConfirmClick, setNeedsConfirmClick] = useState(false);
 
   const canSubmit = useMemo(() => {
     if (!ready) return false;
@@ -30,14 +32,6 @@ export default function ResetPasswordPage() {
     return true;
   }, [ready, password, password2]);
 
-  /**
-   * 1) Reset-link verwerken:
-   * Supabase kan 2 varianten gebruiken:
-   * - /reset-password?code=...
-   * - /reset-password#access_token=...&type=recovery...
-   *
-   * We ondersteunen beide.
-   */
   useEffect(() => {
     let cancelled = false;
 
@@ -47,11 +41,27 @@ export default function ResetPasswordPage() {
       try {
         const url = new URL(window.location.href);
 
-        const code = url.searchParams.get("code");
-        const hash = window.location.hash; // includes leading "#"
+        // 1) Scanner-proof flow: token_hash + type (uit template)
+        const th = url.searchParams.get("token_hash");
+        const tp = url.searchParams.get("type"); // verwacht 'recovery'
 
-        // Sommige providers geven ook error info mee in hash
-        // bijv: #error=access_denied&error_code=otp_expired...
+        if (th && tp) {
+          if (!cancelled) {
+            setTokenHash(th);
+            setFlowType(tp);
+            setNeedsConfirmClick(true); // pas bij knopdruk token gebruiken
+            setMsg(null);
+          }
+          return;
+        }
+
+        // 2) Supabase kan ook ?code=... sturen (PKCE)
+        const code = url.searchParams.get("code");
+
+        // 3) Oudere hash flow (#access_token=... of #error=...)
+        const hash = window.location.hash;
+
+        // Als er een error in de hash zit (otp_expired etc.)
         if (!code && hash && hash.includes("error=")) {
           if (!cancelled) {
             setMsg("De reset-link is ongeldig of verlopen. Vraag opnieuw een reset aan via /login.");
@@ -60,12 +70,8 @@ export default function ResetPasswordPage() {
         }
 
         let exchangeInput: string | null = null;
-
-        if (code) {
-          exchangeInput = code;
-        } else if (hash && hash.length > 1) {
-          exchangeInput = hash;
-        }
+        if (code) exchangeInput = code;
+        else if (hash && hash.length > 1) exchangeInput = hash;
 
         if (!exchangeInput) {
           if (!cancelled) {
@@ -87,7 +93,7 @@ export default function ResetPasswordPage() {
           setReady(true);
           setMsg(null);
         }
-      } catch (e: any) {
+      } catch {
         if (!cancelled) {
           setMsg("Er ging iets mis bij het verwerken van de reset-link. Vraag opnieuw een reset aan via /login.");
         }
@@ -100,9 +106,34 @@ export default function ResetPasswordPage() {
     };
   }, []);
 
-  /**
-   * 2) Nieuw wachtwoord opslaan
-   */
+  async function confirmToken() {
+    if (!tokenHash || !flowType) {
+      setMsg("De reset-link is ongeldig of incompleet. Vraag opnieuw een reset aan via /login.");
+      return;
+    }
+
+    setBusy(true);
+    setMsg(null);
+
+    try {
+      // Dit verbruikt de token pas als de gebruiker echt klikt
+      const { error } = await supabase.auth.verifyOtp({
+        token_hash: tokenHash,
+        type: flowType as any, // 'recovery'
+      });
+
+      if (error) {
+        setMsg("De reset-link is ongeldig of verlopen. Vraag opnieuw een reset aan via /login.");
+        return;
+      }
+
+      setNeedsConfirmClick(false);
+      setReady(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveNewPassword() {
     setMsg(null);
 
@@ -125,17 +156,13 @@ export default function ResetPasswordPage() {
 
     try {
       const { error } = await supabase.auth.updateUser({ password });
-
       if (error) {
         setMsg(error.message);
         return;
       }
 
       setMsg("✅ Wachtwoord aangepast. Je wordt doorgestuurd naar de loginpagina…");
-
-      setTimeout(() => {
-        router.replace("/login");
-      }, 1500);
+      setTimeout(() => router.replace("/login"), 1500);
     } finally {
       setBusy(false);
     }
@@ -147,27 +174,47 @@ export default function ResetPasswordPage() {
 
       <h1 style={{ margin: 0 }}>Nieuw wachtwoord instellen</h1>
 
-      {!ready ? (
-        <div style={{ marginTop: 12 }}>
-          <p style={{ color: "#6b7280", marginTop: 0 }}>
-            {msg ?? "Even geduld…"}
-          </p>
-          <p style={{ color: "#6b7280", fontSize: 13 }}>
-            Tip: vraag altijd een <b>nieuwe</b> reset aan als de link verlopen is.
-          </p>
-        </div>
-      ) : (
+      {msg && (
+        <p style={{ marginTop: 12, color: msg.startsWith("✅") ? "#0a7a2f" : "#6b7280" }}>
+          {msg}
+        </p>
+      )}
+
+      {needsConfirmClick && (
         <div style={{ marginTop: 14 }}>
           <p style={{ color: "#6b7280", marginTop: 0 }}>
-            Kies een nieuw wachtwoord (minimaal 6 tekens).
+            Klik hieronder om je reset-link te bevestigen.
           </p>
 
+          <button
+            onClick={confirmToken}
+            disabled={busy}
+            style={{
+              width: "100%",
+              marginTop: 10,
+              padding: 12,
+              borderRadius: 10,
+              border: "none",
+              background: "#111",
+              color: "#fff",
+              fontWeight: 700,
+              cursor: busy ? "not-allowed" : "pointer",
+              opacity: busy ? 0.7 : 1,
+            }}
+          >
+            {busy ? "Bezig…" : "Doorgaan"}
+          </button>
+        </div>
+      )}
+
+      {ready && !needsConfirmClick && (
+        <div style={{ marginTop: 14 }}>
           <label style={lbl}>Nieuw wachtwoord</label>
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder="Nieuw wachtwoord"
+            placeholder="Minimaal 6 tekens"
             style={inp}
             autoComplete="new-password"
           />
@@ -193,12 +240,6 @@ export default function ResetPasswordPage() {
           >
             {busy ? "Opslaan…" : "Wachtwoord opslaan"}
           </button>
-
-          {msg && (
-            <p style={{ marginTop: 12, color: msg.startsWith("✅") ? "#0a7a2f" : "crimson" }}>
-              {msg}
-            </p>
-          )}
         </div>
       )}
     </PageShell>
