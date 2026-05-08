@@ -1,111 +1,125 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import PageShell from "@/components/PageShell";
+import Topbar from "@/components/Topbar";
 
 export default function ResetPasswordPage() {
+  const router = useRouter();
+
   const [ready, setReady] = useState(false);
   const [newPassword, setNewPassword] = useState("");
-  const [newPassword2, setNewPassword2] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [busy, setBusy] = useState(false);
 
+  /**
+   * Stap 1: token uit reset-link omzetten naar een Supabase sessie
+   * Dit gebeurt automatisch als de gebruiker via de mail komt
+   */
   useEffect(() => {
-    // Als je via de reset-link binnenkomt, krijgt Supabase doorgaans een PASSWORD_RECOVERY event.
-    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "PASSWORD_RECOVERY") {
-        setReady(true);
-        setMsg("Kies een nieuw wachtwoord.");
+    async function initFromHash() {
+      const hash = window.location.hash;
+
+      if (!hash) {
+        setMsg(
+          "Open deze pagina via de reset-link uit je e-mail. Werkt het niet? Vraag dan opnieuw een reset aan via /login."
+        );
+        return;
       }
-    });
 
-    // Fallback: soms is er al een sessie gezet.
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) setReady(true);
-    });
+      const { error } = await supabase.auth.exchangeCodeForSession(hash);
 
-    return () => {
-      sub.subscription.unsubscribe();
-    };
+      if (error) {
+        setMsg("De reset-link is ongeldig of verlopen. Vraag opnieuw een reset aan.");
+        return;
+      }
+
+      setReady(true);
+    }
+
+    initFromHash();
   }, []);
 
+  /**
+   * Stap 2: nieuw wachtwoord opslaan
+   */
   async function saveNewPassword() {
+    if (!newPassword || newPassword.length < 6) {
+      setMsg("Wachtwoord moet minimaal 6 tekens zijn.");
+      return;
+    }
+
+    setBusy(true);
     setMsg(null);
 
-    if (newPassword.length < 8) {
-      setMsg("Kies een wachtwoord van minimaal 8 tekens.");
-      return;
-    }
-    if (newPassword !== newPassword2) {
-      setMsg("Wachtwoorden komen niet overeen.");
-      return;
-    }
+    const { error } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
 
-    setSaving(true);
-    const { error } = await supabase.auth.updateUser({ password: newPassword });
-    setSaving(false);
+    setBusy(false);
 
     if (error) {
       setMsg(error.message);
       return;
     }
 
-    setMsg("Wachtwoord aangepast. Je kunt nu opnieuw inloggen.");
-    await supabase.auth.signOut();
-    window.location.href = "/login";
+    setMsg("✅ Wachtwoord aangepast. Je wordt doorgestuurd naar de loginpagina…");
+
+    setTimeout(() => {
+      router.replace("/login");
+    }, 2000);
   }
 
   return (
-    <main style={{ maxWidth: 420, margin: "40px auto", fontFamily: "sans-serif" }}>
+    <PageShell maxWidth={420}>
+      <Topbar />
+
       <h1>Nieuw wachtwoord instellen</h1>
 
-      {!ready && (
-        <p>
-          Open deze pagina via de reset-link uit je e-mail. Werkt het niet? Vraag dan opnieuw een reset aan via{" "}
-          <a href="/login">/login</a>.
-        </p>
-      )}
-
-      {ready && (
+      {!ready ? (
+        <p style={{ marginTop: 12, color: "#6b7280" }}>{msg}</p>
+      ) : (
         <>
-          <p>Kies je nieuwe wachtwoord:</p>
-
-          <input
-            type="password"
-            placeholder="Nieuw wachtwoord"
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            style={{ width: "100%", marginBottom: 8, padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
-          />
-
-          <input
-            type="password"
-            placeholder="Herhaal nieuw wachtwoord"
-            value={newPassword2}
-            onChange={(e) => setNewPassword2(e.target.value)}
-            style={{ width: "100%", marginBottom: 8, padding: 10, borderRadius: 10, border: "1px solid #ddd" }}
-          />
+          <label style={{ display: "block", marginTop: 16 }}>
+            Nieuw wachtwoord
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="Minimaal 6 tekens"
+              style={{
+                width: "100%",
+                marginTop: 6,
+                padding: 10,
+                borderRadius: 8,
+                border: "1px solid #ddd",
+              }}
+            />
+          </label>
 
           <button
             onClick={saveNewPassword}
-            disabled={saving}
+            disabled={busy}
             style={{
+              marginTop: 16,
               width: "100%",
               padding: 12,
               borderRadius: 10,
               border: "none",
               background: "#111",
               color: "#fff",
-              cursor: saving ? "not-allowed" : "pointer",
+              fontWeight: 700,
+              cursor: busy ? "not-allowed" : "pointer",
             }}
           >
-            {saving ? "Opslaan..." : "Opslaan"}
+            {busy ? "Opslaan…" : "Wachtwoord opslaan"}
           </button>
+
+          {msg && <p style={{ marginTop: 12 }}>{msg}</p>}
         </>
       )}
-
-      {msg && <p style={{ marginTop: 12 }}>{msg}</p>}
-    </main>
+    </PageShell>
   );
 }
