@@ -351,7 +351,10 @@ export default function HomePage() {
 
           <div style={rulesContent}>
             <p style={{ marginTop: 0 }}>
-              Per wedstrijd voorspel je de eindstand (90 minuten + blessuretijd). Dus de eindstand zonder eventuele verlengingen.
+              
+Per wedstrijd voorspel je de <b>eindstand inclusief eventuele verlenging</b>.
+  Strafschoppen tellen niet mee voor de score, maar bepalen alleen welke ploeg doorgaat.
+
               Let bij het voorspellen erop dat je op de knop 'Alles opslaan' klikt. Anders wordt er niks opgeslagen. En scoor je geen punten.
             </p>
 
