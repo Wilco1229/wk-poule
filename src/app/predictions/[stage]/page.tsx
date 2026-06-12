@@ -53,20 +53,20 @@ export default function PredictionsByStagePage({
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [drafts, setDrafts] = useState<Record<number, Draft>>({});
 
-  // 🔒 Fase-lock (jouw huidige UX): deadline = eerste kickoff van de stage
   const [deadline, setDeadline] = useState<Date | null>(null);
   const isClosed = deadline ? new Date() >= deadline : false;
 
-  // Modal state (voorspellingen van anderen)
   const [modalOpen, setModalOpen] = useState(false);
   const [modalLoading, setModalLoading] = useState(false);
   const [modalErr, setModalErr] = useState<string | null>(null);
   const [modalRows, setModalRows] = useState<PublicPredictionRow[]>([]);
-  const [modalTitle, setModalTitle] = useState<string>("");
+  const [modalTitle, setModalTitle] = useState("");
 
   const teamMap = useMemo(() => {
     const m = new Map<number, { name: string; countryCode: string | null }>();
-    for (const t of teams) m.set(t.id, { name: t.name, countryCode: t.country_code });
+    for (const t of teams) {
+      m.set(t.id, { name: t.name, countryCode: t.country_code });
+    }
     return m;
   }, [teams]);
 
@@ -93,7 +93,6 @@ export default function PredictionsByStagePage({
           return;
         }
 
-        // Deadline bepalen (eerste kickoff van deze stage)
         const { data: deadlineRow, error: dlErr } = await supabase
           .from("matches")
           .select("kickoff")
@@ -106,9 +105,11 @@ export default function PredictionsByStagePage({
           setMsg(dlErr.message);
           return;
         }
-        if (!cancelled) setDeadline(deadlineRow?.kickoff ? new Date(deadlineRow.kickoff) : null);
 
-        // Teams (incl. country_code voor vlaggen)
+        if (!cancelled) {
+          setDeadline(deadlineRow?.kickoff ? new Date(deadlineRow.kickoff) : null);
+        }
+
         const { data: teamData, error: teamErr } = await supabase
           .from("teams")
           .select("id,name,country_code")
@@ -118,9 +119,11 @@ export default function PredictionsByStagePage({
           setMsg(teamErr.message);
           return;
         }
-        if (!cancelled) setTeams((teamData ?? []) as TeamRow[]);
 
-        // Matches voor deze stage
+        if (!cancelled) {
+          setTeams((teamData ?? []) as TeamRow[]);
+        }
+
         const { data: matchData, error: matchErr } = await supabase
           .from("matches")
           .select("id,kickoff,stage,home_team_id,away_team_id")
@@ -133,9 +136,10 @@ export default function PredictionsByStagePage({
         }
 
         const ms = (matchData ?? []) as MatchRow[];
-        if (!cancelled) setMatches(ms);
+        if (!cancelled) {
+          setMatches(ms);
+        }
 
-        // Bestaande voorspellingen (RLS: alleen eigen)
         const ids = ms.map((m) => m.id);
         if (ids.length > 0) {
           const { data: predData, error: predErr } = await supabase
@@ -150,6 +154,7 @@ export default function PredictionsByStagePage({
 
           const existing = (predData ?? []) as ExistingPrediction[];
           const initDrafts: Record<number, Draft> = {};
+
           for (const m of ms) {
             const p = existing.find((e) => e.match_id === m.id);
             initDrafts[m.id] = {
@@ -158,18 +163,25 @@ export default function PredictionsByStagePage({
             };
           }
 
-          if (!cancelled) setDrafts(initDrafts);
+          if (!cancelled) {
+            setDrafts(initDrafts);
+          }
         } else {
-          if (!cancelled) setDrafts({});
+          if (!cancelled) {
+            setDrafts({});
+          }
         }
       } catch (e: any) {
         setMsg(e?.message ?? String(e));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     }
 
     init();
+
     return () => {
       cancelled = true;
     };
@@ -190,7 +202,7 @@ export default function PredictionsByStagePage({
   }
 
   async function openPublicPredictions(matchId: number, kickoffIso: string) {
-    if (!matchStarted(kickoffIso)) return; // alleen na start
+    if (!matchStarted(kickoffIso)) return;
 
     setModalOpen(true);
     setModalLoading(true);
@@ -229,6 +241,7 @@ export default function PredictionsByStagePage({
         setMsg(sessErr.message);
         return;
       }
+
       const user = sessionData.session?.user;
       if (!user) {
         router.replace("/login");
@@ -246,7 +259,10 @@ export default function PredictionsByStagePage({
 
           const hg = Number(h);
           const ag = Number(a);
-          if (!Number.isInteger(hg) || !Number.isInteger(ag) || hg < 0 || ag < 0) return null;
+
+          if (!Number.isInteger(hg) || !Number.isInteger(ag) || hg < 0 || ag < 0) {
+            return null;
+          }
 
           return {
             user_id: user.id,
@@ -311,7 +327,9 @@ export default function PredictionsByStagePage({
 
       {deadline && (
         <p style={{ marginTop: 6, fontSize: 13, color: "#666" }}>
-          {isClosed ? `🔒 Fase gesloten sinds ${deadline.toLocaleString()}` : `⏰ Deadline: ${deadline.toLocaleString()}`}
+          {isClosed
+            ? `🔒 Fase gesloten sinds ${deadline.toLocaleString()}`
+            : `⏰ Deadline: ${deadline.toLocaleString()}`}
         </p>
       )}
 
@@ -331,7 +349,6 @@ export default function PredictionsByStagePage({
               style={{
                 ...card,
                 cursor: started ? "pointer" : "default",
-                outline: started ? "1px solid #e5e7eb" : "none",
               }}
               onClick={() => openPublicPredictions(m.id, m.kickoff)}
               title={started ? "Klik om voorspellingen van anderen te bekijken" : "Pas zichtbaar na start van de wedstrijd"}
@@ -388,22 +405,21 @@ export default function PredictionsByStagePage({
         </button>
       </div>
 
-      {/* Modal */}
       {modalOpen && (
         <div style={overlay} onClick={() => setModalOpen(false)}>
           <div style={modal} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "baseline" }}>
+            <div style={modalHeader}>
               <h2 style={{ margin: 0 }}>{modalTitle}</h2>
               <button style={closeBtn} onClick={() => setModalOpen(false)}>
                 Sluiten
               </button>
             </div>
 
-            {modalLoading && <p style={{ marginTop: 12 }}>Laden…</p>}
-            {modalErr && <p style={{ marginTop: 12, color: "crimson" }}>Fout: {modalErr}</p>}
+            <div style={modalBody}>
+              {modalLoading && <p>Laden…</p>}
+              {modalErr && <p style={{ color: "crimson" }}>Fout: {modalErr}</p>}
 
-            {!modalLoading && !modalErr && (
-              <div style={{ marginTop: 12 }}>
+              {!modalLoading && !modalErr && (
                 <div style={listWrap}>
                   <div style={listHead}>
                     <div>Speler</div>
@@ -428,11 +444,13 @@ export default function PredictionsByStagePage({
                     </div>
                   )}
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       )}
+
+      <div style={{ height: 8 }} />
     </PageShell>
   );
 }
@@ -482,10 +500,29 @@ const overlay: React.CSSProperties = {
 
 const modal: React.CSSProperties = {
   width: "min(720px, 100%)",
+  maxHeight: "85vh",
   background: "#fff",
   borderRadius: 14,
-  padding: 16,
   boxShadow: "0 20px 50px rgba(0,0,0,0.25)",
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
+};
+
+const modalHeader: React.CSSProperties = {
+  padding: 16,
+  borderBottom: "1px solid #eee",
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 10,
+  alignItems: "baseline",
+  flexShrink: 0,
+};
+
+const modalBody: React.CSSProperties = {
+  padding: 16,
+  overflowY: "auto",
+  maxHeight: "calc(85vh - 70px)",
 };
 
 const closeBtn: React.CSSProperties = {
@@ -518,3 +555,4 @@ const listRow: React.CSSProperties = {
   borderTop: "1px solid #eee",
   alignItems: "center",
 };
+``
